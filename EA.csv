@@ -1,0 +1,4 @@
+Age,JobRole,MonthlyIncome,JobSatisfaction,Attrition
+25,Sales Executive,4000,3,Yes
+30,Research Scientist,6000,4,No
+45,Manager,15000,2,No

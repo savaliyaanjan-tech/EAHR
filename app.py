@@ -1,134 +1,110 @@
-
 import streamlit as st
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.model_selection import train_test_split
+import plotly.express as px
+from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.preprocessing import LabelEncoder
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix, roc_curve, auc
+import io
 
 st.set_page_config(page_title="Employee Attrition Dashboard", layout="wide")
 
-st.title("👥 Employee Attrition Prediction & HR Insights")
+@st.cache_data
+def load_data():
+    return pd.read_csv('EA.csv')
 
-# File upload
-uploaded_file = st.file_uploader("Upload your dataset (CSV format)", type=["csv"])
+data = load_data()
 
-if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file)
-    st.success("File uploaded successfully!")
+st.sidebar.title('Navigation')
+tabs = st.sidebar.radio('Go to:', ['📊 Insights Dashboard', '🤖 Model Performance', '📂 Predict New Data'])
 
-    # Preprocess Data
-    for col in df.columns:
-        if df[col].isnull().sum() > 0:
-            if df[col].dtype in ['float64', 'int64']:
-                df[col].fillna(df[col].mean(), inplace=True)
-            else:
-                df[col].fillna(df[col].mode()[0], inplace=True)
-
-    # Label Encoding
-    for col in df.select_dtypes(include=['object']).columns:
-        le = LabelEncoder()
-        df[col] = le.fit_transform(df[col])
-
-    # Sidebar Filters
-    st.sidebar.header("🔍 Filters")
-    job_roles = df['JobRole'].unique().tolist() if 'JobRole' in df.columns else []
-    selected_roles = st.sidebar.multiselect("Select Job Roles", job_roles, default=job_roles)
-    satisfaction_cols = [col for col in df.columns if "Satisfaction" in col]
-    selected_satisfaction = st.sidebar.slider("Filter by Satisfaction", 0, 5, (0, 5))
-
-    filtered_df = df.copy()
-    if 'JobRole' in df.columns:
-        filtered_df = filtered_df[filtered_df['JobRole'].isin(selected_roles)]
-    for col in satisfaction_cols:
-        filtered_df = filtered_df[(filtered_df[col] >= selected_satisfaction[0]) & (filtered_df[col] <= selected_satisfaction[1])]
-
-    # Charts Section
-    st.header("📊 HR Analytics Dashboard")
+# ------------------------ Tab 1: Insights Dashboard ------------------------ #
+if tabs == '📊 Insights Dashboard':
+    st.title('Employee Attrition Insights Dashboard')
+    job_roles = st.multiselect('Select Job Role(s):', data['JobRole'].unique(), default=data['JobRole'].unique())
+    sat_min, sat_max = st.slider('Filter by Job Satisfaction:', int(data['JobSatisfaction'].min()), int(data['JobSatisfaction'].max()), (int(data['JobSatisfaction'].min()), int(data['JobSatisfaction'].max())))
+    filtered = data[(data['JobRole'].isin(job_roles)) & (data['JobSatisfaction'].between(sat_min, sat_max))]
 
     col1, col2 = st.columns(2)
-
     with col1:
-        st.subheader("Attrition by Job Role")
-        fig1, ax1 = plt.subplots()
-        sns.countplot(x='JobRole', hue='Attrition', data=filtered_df, ax=ax1, palette='Blues')
-        plt.xticks(rotation=45)
-        st.pyplot(fig1)
-
-        st.subheader("Average Monthly Income by Department")
-        fig2, ax2 = plt.subplots()
-        sns.barplot(x='Department', y='MonthlyIncome', data=filtered_df, ax=ax2, palette='coolwarm')
-        plt.xticks(rotation=45)
-        st.pyplot(fig2)
-
-        st.subheader("Attrition Rate by Age Group")
-        filtered_df['AgeGroup'] = pd.cut(filtered_df['Age'], bins=[18,25,35,45,55,65], labels=['18-25','26-35','36-45','46-55','56-65'])
-        fig3, ax3 = plt.subplots()
-        sns.countplot(x='AgeGroup', hue='Attrition', data=filtered_df, ax=ax3, palette='mako')
-        st.pyplot(fig3)
-
+        fig1 = px.bar(filtered.groupby('JobRole')['Attrition'].value_counts(normalize=True).rename('Rate').reset_index(),
+                      x='JobRole', y='Rate', color='Attrition', title='Attrition Rate by Job Role')
+        st.plotly_chart(fig1, use_container_width=True)
     with col2:
-        st.subheader("Attrition by Gender and Overtime")
-        fig4, ax4 = plt.subplots()
-        sns.countplot(x='Gender', hue='OverTime', data=filtered_df, ax=ax4, palette='Set2')
-        st.pyplot(fig4)
+        fig2 = px.pie(filtered, names='JobRole', title='Employee Distribution by Job Role')
+        st.plotly_chart(fig2, use_container_width=True)
 
-        st.subheader("Years at Company vs Attrition")
-        fig5, ax5 = plt.subplots()
-        sns.boxplot(x='Attrition', y='YearsAtCompany', data=filtered_df, ax=ax5, palette='Spectral')
-        st.pyplot(fig5)
+    col3, col4 = st.columns(2)
+    with col3:
+        fig3 = px.scatter(filtered, x='Age', y='MonthlyIncome', color='Attrition', title='Age vs Income by Attrition')
+        st.plotly_chart(fig3, use_container_width=True)
+    with col4:
+        fig4 = px.box(filtered, x='JobRole', y='MonthlyIncome', color='Attrition', title='Income Distribution by Role')
+        st.plotly_chart(fig4, use_container_width=True)
 
-    # Algorithm Section
-    st.header("🧠 Model Training and Performance")
-    if st.button("Run Models"):
+    fig5 = px.density_heatmap(filtered, x='Age', y='JobSatisfaction', color_continuous_scale='Blues', title='Satisfaction vs Age Heatmap')
+    st.plotly_chart(fig5, use_container_width=True)
+
+# ------------------------ Tab 2: Model Performance ------------------------ #
+elif tabs == '🤖 Model Performance':
+    st.title('Model Performance Metrics')
+
+    def preprocess(df):
+        df = df.copy()
+        le = LabelEncoder()
+        for col in df.select_dtypes(include='object').columns:
+            df[col] = le.fit_transform(df[col])
         X = df.drop('Attrition', axis=1)
         y = df['Attrition']
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
+        return X, y
 
-        models = {
-            "Decision Tree": DecisionTreeClassifier(random_state=42),
-            "Random Forest": RandomForestClassifier(random_state=42),
-            "Gradient Boosting": GradientBoostingClassifier(random_state=42)
-        }
+    X, y = preprocess(data)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=0.2, random_state=42)
 
-        results = []
-        for name, model in models.items():
-            model.fit(X_train, y_train)
-            y_pred = model.predict(X_test)
-            y_proba = model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba") else [0]*len(y_pred)
+    models = {'Decision Tree': DecisionTreeClassifier(),
+              'Random Forest': RandomForestClassifier(),
+              'Gradient Boosting': GradientBoostingClassifier()}
 
-            results.append({
-                "Model": name,
-                "Train Accuracy": model.score(X_train, y_train),
-                "Test Accuracy": accuracy_score(y_test, y_pred),
-                "Precision": precision_score(y_test, y_pred),
-                "Recall": recall_score(y_test, y_pred),
-                "F1 Score": f1_score(y_test, y_pred),
-                "AUC": roc_auc_score(y_test, y_proba)
-            })
+    results = []
+    for name, model in models.items():
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        scores = cross_val_score(model, X, y, cv=5)
+        results.append({
+            'Model': name,
+            'Train Acc': model.score(X_train, y_train),
+            'Test Acc': accuracy_score(y_test, y_pred),
+            'Precision': precision_score(y_test, y_pred),
+            'Recall': recall_score(y_test, y_pred),
+            'F1': f1_score(y_test, y_pred),
+            'AUC': roc_auc_score(y_test, y_pred),
+            'CV Mean': scores.mean()
+        })
 
-        results_df = pd.DataFrame(results)
-        st.dataframe(results_df)
+    st.dataframe(pd.DataFrame(results))
 
-    # Prediction Tab
-    st.header("📂 Upload New Data for Prediction")
-    new_file = st.file_uploader("Upload new data for prediction", type=["csv"], key="newdata")
-    if new_file is not None:
-        new_df = pd.read_csv(new_file)
-        for col in new_df.select_dtypes(include=['object']).columns:
-            le = LabelEncoder()
-            new_df[col] = le.fit_transform(new_df[col])
-        model = GradientBoostingClassifier(random_state=42)
-        X = df.drop('Attrition', axis=1)
-        y = df['Attrition']
-        model.fit(X, y)
-        new_df['Predicted_Attrition'] = model.predict(new_df)
-        st.write(new_df.head())
+    for name, model in models.items():
+        y_pred = model.fit(X_train, y_train).predict(X_test)
+        cm = confusion_matrix(y_test, y_pred)
+        st.subheader(f'{name} Confusion Matrix')
+        st.write(cm)
 
-        csv = new_df.to_csv(index=False).encode('utf-8')
-        st.download_button("Download Predicted Data", csv, "Predicted_Attrition.csv", "text/csv")
-else:
-    st.info("👆 Upload a dataset to begin analysis.")
+# ------------------------ Tab 3: Predict New Data ------------------------ #
+elif tabs == '📂 Predict New Data':
+    st.title('Predict Attrition for New Data')
+    upload = st.file_uploader('Upload New Dataset (CSV)', type=['csv'])
+    if upload:
+        new_data = pd.read_csv(upload)
+        le = LabelEncoder()
+        for col in new_data.select_dtypes(include='object').columns:
+            new_data[col] = le.fit_transform(new_data[col])
+        model = RandomForestClassifier().fit(X_train, y_train)
+        preds = model.predict(new_data)
+        new_data['Predicted_Attrition'] = preds
+        st.dataframe(new_data.head())
+        csv = new_data.to_csv(index=False).encode('utf-8')
+        st.download_button('Download Predicted File', data=csv, file_name='predicted_attrition.csv', mime='text/csv')
