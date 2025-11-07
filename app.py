@@ -1,15 +1,12 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
 import plotly.express as px
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.preprocessing import LabelEncoder
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix, roc_curve, auc
-import io
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
 
 st.set_page_config(page_title="Employee Attrition Dashboard", layout="wide")
 
@@ -63,7 +60,15 @@ elif tabs == '🤖 Model Performance':
         return X, y
 
     X, y = preprocess(data)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=0.2, random_state=42)
+
+    if len(y.unique()) < 2:
+        st.error("Attrition column must have at least two unique classes for model training.")
+        st.stop()
+
+    if y.value_counts().min() < 2:
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    else:
+        X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=0.2, random_state=42)
 
     models = {'Decision Tree': DecisionTreeClassifier(),
               'Random Forest': RandomForestClassifier(),
@@ -78,9 +83,9 @@ elif tabs == '🤖 Model Performance':
             'Model': name,
             'Train Acc': model.score(X_train, y_train),
             'Test Acc': accuracy_score(y_test, y_pred),
-            'Precision': precision_score(y_test, y_pred),
-            'Recall': recall_score(y_test, y_pred),
-            'F1': f1_score(y_test, y_pred),
+            'Precision': precision_score(y_test, y_pred, zero_division=0),
+            'Recall': recall_score(y_test, y_pred, zero_division=0),
+            'F1': f1_score(y_test, y_pred, zero_division=0),
             'AUC': roc_auc_score(y_test, y_pred),
             'CV Mean': scores.mean()
         })
@@ -102,7 +107,8 @@ elif tabs == '📂 Predict New Data':
         le = LabelEncoder()
         for col in new_data.select_dtypes(include='object').columns:
             new_data[col] = le.fit_transform(new_data[col])
-        model = RandomForestClassifier().fit(X_train, y_train)
+        X, y = preprocess(data)
+        model = RandomForestClassifier().fit(X, y)
         preds = model.predict(new_data)
         new_data['Predicted_Attrition'] = preds
         st.dataframe(new_data.head())
